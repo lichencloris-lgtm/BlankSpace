@@ -774,15 +774,28 @@ body {
               <div class="icon">🔵</div>
               <div class="name">支付宝</div>
             </div>
-            <div class="payment-method" onclick="selectPayment(this, 'bank')">
-              <div class="icon">🏦</div>
-              <div class="name">银行转账</div>
+          </div>
+
+          <!-- QR Code Display -->
+          <div id="qrcodeDisplay" style="text-align: center; padding: 24px; background: var(--cream); border-radius: var(--radius-md); margin-bottom: 24px;">
+            <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 16px;">请使用对应 App 扫描下方二维码完成支付</p>
+            <div id="qrWechat">
+              <img src="https://p-mira-img-sign-sgnontt.byteintl.net/tos-mya-i-xobrcjvdq7/311ac19c532d408fa5a341ee6b25328a.png~tplv-xobrcjvdq7-image-jpeg.jpeg?lk3s=3523e930&x-orig-authkey=miraorigin&x-orig-expires=1812078000&x-orig-sign=rRnOh3fWssVC3FaTLeqhj1xNm3k%3D" alt="微信收款码" style="max-width: 260px; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.1);">
+              <p style="margin-top: 12px; font-size: 0.85rem; color: var(--text-muted);">打开微信 → 扫一扫 → 转账 ¥200</p>
+            </div>
+            <div id="qrAlipay" style="display: none;">
+              <img src="https://p-mira-img-sign-sgnontt.byteintl.net/tos-mya-i-xobrcjvdq7/e47765a80999450f96b0e9c2ad22166b.png~tplv-xobrcjvdq7-image-jpeg.jpeg?lk3s=3523e930&x-orig-authkey=miraorigin&x-orig-expires=1812078000&x-orig-sign=uIzx82tgSm11oPQJlPOcUIJOlNk%3D" alt="支付宝收款码" style="max-width: 260px; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.1);">
+              <p style="margin-top: 12px; font-size: 0.85rem; color: var(--text-muted);">打开支付宝 → 扫一扫 → 转账 ¥200</p>
             </div>
           </div>
+
+          <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 16px; padding: 12px 16px; background: var(--sage-light); border-radius: var(--radius-sm);">
+            ⚠️ 扫码支付完成后，请点击下方「我已完成支付」按钮提交预约。咨询师确认收款后将发送预约确认通知。
+          </p>
         </div>
         <div style="display: flex; justify-content: space-between;">
           <button class="btn btn-ghost" onclick="goBackFromPayment()">← 上一步</button>
-          <button class="btn btn-primary" onclick="completePayment()">确认支付 ¥200</button>
+          <button class="btn btn-primary" onclick="completePayment()">我已完成支付</button>
         </div>
       </div>
     </div>
@@ -799,8 +812,8 @@ body {
         <p>您的咨询预约已确认，期待与您的见面</p>
         <div class="confirmation-details" id="confirmationDetails"></div>
         <div class="reminder-note">
-          <strong>📩 提醒已发送</strong><br>
-          系统已向您和咨询师发送预约确认通知。咨询开始前24小时，双方都会收到提醒消息。请准时参加，如需取消请提前24小时联系。
+          <strong>📩 预约已提交</strong><br>
+          咨询师确认收到您的转账后，会通过短信/微信通知您预约成功。咨询开始前24小时，双方都会收到提醒消息。请准时参加，如需取消请提前24小时联系。
         </div>
         <div style="margin-top: 32px;">
           <button class="btn btn-primary" onclick="navigateTo('home')">返回首页</button>
@@ -1347,6 +1360,10 @@ function validateStep3() {
 function selectPayment(el, method) {
   document.querySelectorAll('.payment-method').forEach(m => m.classList.remove('selected'));
   el.classList.add('selected');
+
+  // Toggle QR code display
+  document.getElementById('qrWechat').style.display = method === 'wechat' ? 'block' : 'none';
+  document.getElementById('qrAlipay').style.display = method === 'alipay' ? 'block' : 'none';
 }
 
 function goBackFromPayment() {
@@ -1384,7 +1401,7 @@ function completePayment() {
     clientEmail: clientEmail,
     topic: topic,
     note: note,
-    status: 'confirmed',
+    status: 'pending',
     createdAt: new Date().toISOString()
   };
 
@@ -1510,12 +1527,25 @@ function renderBookingsList() {
     const endTime = `${(parseInt(b.time.split(':')[0]) + 1).toString().padStart(2, '0')}:00`;
     return `<div class="booking-item">
       <div class="booking-info">
-        <h4>${b.clientName} · ${b.topic}</h4>
+        <h4>${b.clientName} · ${b.topic || '未填写'}</h4>
         <p>${date.getMonth()+1}月${date.getDate()}日 ${b.time}-${endTime} · ${b.clientPhone}</p>
       </div>
-      <span class="booking-status ${b.status}">${b.status === 'confirmed' ? '已确认' : '待确认'}</span>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span class="booking-status ${b.status}">${b.status === 'confirmed' ? '已确认' : '待确认'}</span>
+        ${b.status === 'pending' ? `<button class="btn btn-ghost" style="padding: 4px 12px; font-size: 0.8rem; color: var(--amber);" onclick="confirmBooking('${b.id}')">确认收款</button>` : ''}
+      </div>
     </div>`;
   }).join('');
+}
+
+function confirmBooking(bookingId) {
+  const booking = bookings.find(b => b.id === bookingId);
+  if (booking) {
+    booking.status = 'confirmed';
+    Store.set('bookings', bookings);
+    renderBookingsList();
+    showToast('已确认收款，预约生效');
+  }
 }
 
 function saveAgreement() {
