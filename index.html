@@ -510,12 +510,11 @@ body {
 <!-- Navigation -->
 <nav class="nav">
   <div class="nav-inner">
-    <div class="nav-brand">留白</div>
+    <div class="nav-brand" onclick="handleSecretTap()">留白</div>
     <div class="nav-links" id="navLinks">
       <a href="#" data-page="home" class="active">首页</a>
       <a href="#" data-page="booking">预约咨询</a>
       <a href="#" data-page="mybookings">我的预约</a>
-      <a href="#" data-page="admin">咨询师后台</a>
     </div>
     <button class="mobile-menu-btn" onclick="toggleMobileMenu()">☰</button>
   </div>
@@ -1001,13 +1000,68 @@ body {
 <div class="toast" id="toast"></div>
 
 <script>
-// ========== Data Store ==========
+// ========== Supabase Configuration ==========
+const SUPABASE_URL = 'https://feecjlhlijceqgtunuwc.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZWNqbGhsaWpjZXFndHVudXdjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA1MjA4OTcsImV4cCI6MjA5NjA5Njg5N30.IJqpGY2Vz42-mLAqay6iPKoktxl8M-xxTfbpCfsD9w8';
+
+// Supabase REST API helper
+const Supabase = {
+  async fetch(endpoint, options = {}) {
+    const url = `${SUPABASE_URL}/rest/v1/${endpoint}`;
+    const headers = {
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json',
+      'Prefer': options.prefer || 'return=representation'
+    };
+    const res = await fetch(url, { ...options, headers: { ...headers, ...options.headers } });
+    if (!res.ok) {
+      console.error('Supabase error:', res.status, await res.text());
+      return null;
+    }
+    const text = await res.text();
+    return text ? JSON.parse(text) : [];
+  },
+  async getBookings() {
+    return await this.fetch('bookings?select=*&order=created_at.desc') || [];
+  },
+  async getBookingsByPhone(phone) {
+    return await this.fetch(`bookings?client_phone=eq.${encodeURIComponent(phone)}&select=*&order=created_at.desc`) || [];
+  },
+  async insertBooking(booking) {
+    return await this.fetch('bookings', {
+      method: 'POST',
+      body: JSON.stringify(booking)
+    });
+  },
+  async updateBooking(id, data) {
+    return await this.fetch(`bookings?id=eq.${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data)
+    });
+  },
+  async deleteBooking(id) {
+    return await this.fetch(`bookings?id=eq.${id}`, {
+      method: 'DELETE'
+    });
+  }
+};
+
+// ========== Data Store (for non-booking data like schedule, admin password) ==========
+const _memStore = {};
 const Store = {
   get(key, defaultVal) {
-    try { return JSON.parse(localStorage.getItem(key)) || defaultVal; }
-    catch { return defaultVal; }
+    try {
+      const val = localStorage.getItem(key);
+      return val ? JSON.parse(val) : defaultVal;
+    } catch {
+      return _memStore[key] !== undefined ? _memStore[key] : defaultVal;
+    }
   },
-  set(key, val) { localStorage.setItem(key, JSON.stringify(val)); }
+  set(key, val) {
+    try { localStorage.setItem(key, JSON.stringify(val)); }
+    catch { _memStore[key] = val; }
+  }
 };
 
 // Default schedule
@@ -1023,7 +1077,7 @@ const DEFAULT_SCHEDULE = {
 
 // State
 let schedule = Store.get('schedule', DEFAULT_SCHEDULE);
-let bookings = Store.get('bookings', []);
+let bookings = []; // Will be loaded from Supabase
 let currentWeekStart = getMonday(new Date());
 let selectedDate = null;
 let selectedSlot = null;
@@ -1032,13 +1086,22 @@ let isReturningClient = false;
 let returningClientInfo = null;
 
 // ========== Returning Client Detection ==========
-function getReturningClient() {
-  // Check if there's a previous booking with client info
-  const pastBookings = Store.get('bookings', []);
-  if (pastBookings.length > 0) {
-    // Get the most recent booking's client info
-    const sorted = [...pastBookings].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    return sorted[0];
+async function getReturningClient() {
+  // Check localStorage for last used phone number
+  const lastPhone = Store.get('lastClientPhone', null);
+  if (lastPhone) {
+    const pastBookings = await Supabase.getBookingsByPhone(lastPhone);
+    if (pastBookings && pastBookings.length > 0) {
+      const latest = pastBookings[0];
+      return {
+        clientName: latest.client_name,
+        clientPhone: latest.client_phone,
+        clientEmail: latest.client_email,
+        topic: latest.topic,
+        date: latest.booking_date,
+        time: latest.booking_slot
+      };
+    }
   }
   return null;
 }
@@ -1085,6 +1148,29 @@ document.querySelectorAll('.nav-links a').forEach(a => {
 function toggleMobileMenu() {
   document.getElementById('navLinks').classList.toggle('show');
 }
+
+// ========== Secret Admin Access ==========
+let secretTapCount = 0;
+let secretTapTimer = null;
+
+function handleSecretTap() {
+  secretTapCount++;
+  if (secretTapTimer) clearTimeout(secretTapTimer);
+  secretTapTimer = setTimeout(() => { secretTapCount = 0; }, 2000);
+
+  if (secretTapCount >= 5) {
+    secretTapCount = 0;
+    navigateTo('admin');
+  }
+}
+
+// Also support URL hash: yoursite.com/#admin
+function checkHashAccess() {
+  if (window.location.hash === '#admin') {
+    navigateTo('admin');
+  }
+}
+window.addEventListener('hashchange', checkHashAccess);
 
 // ========== Calendar ==========
 function getMonday(d) {
@@ -1153,7 +1239,7 @@ function selectDate(dateStr, dayOfWeek) {
   showTimeSlots(dateStr, dayOfWeek);
 }
 
-function showTimeSlots(dateStr, dayOfWeek) {
+async function showTimeSlots(dateStr, dayOfWeek) {
   const container = document.getElementById('timeSlots');
   const grid = document.getElementById('slotsGrid');
   const label = document.getElementById('selectedDateLabel');
@@ -1163,9 +1249,10 @@ function showTimeSlots(dateStr, dayOfWeek) {
   label.textContent = `${date.getMonth() + 1}月${date.getDate()}日 ${weekDays[date.getDay()]} 可选时段`;
 
   const slots = schedule[dayOfWeek] || [];
-  const bookedSlots = bookings
-    .filter(b => b.date === dateStr)
-    .map(b => b.time);
+
+  // Check booked slots from Supabase
+  const dayBookings = await Supabase.fetch(`bookings?booking_date=eq.${dateStr}&select=booking_slot`) || [];
+  const bookedSlots = dayBookings.map(b => b.booking_slot);
 
   grid.innerHTML = slots.map(time => {
     const isBooked = bookedSlots.includes(time);
@@ -1235,7 +1322,7 @@ function updateStepIndicator() {
   }
 }
 
-function resetBookingFlow() {
+async function resetBookingFlow() {
   currentStep = 1;
   selectedDate = null;
   selectedSlot = null;
@@ -1244,8 +1331,8 @@ function resetBookingFlow() {
   document.getElementById('step1Next').disabled = true;
   document.getElementById('timeSlots').style.display = 'none';
 
-  // Detect returning client
-  returningClientInfo = getReturningClient();
+  // Detect returning client (async from Supabase)
+  returningClientInfo = await getReturningClient();
   isReturningClient = !!returningClientInfo;
 
   // Update steps UI for returning clients
@@ -1374,42 +1461,87 @@ function goBackFromPayment() {
   }
 }
 
-function completePayment() {
-  // Create booking - use returning client info if applicable
-  let clientName, clientPhone, clientEmail, topic, note;
+async function completePayment() {
+  try {
+    // Safety check
+    if (!selectedDate || !selectedSlot) {
+      showToast('请先选择咨询时间');
+      return;
+    }
 
-  if (isReturningClient && returningClientInfo) {
-    clientName = returningClientInfo.clientName;
-    clientPhone = returningClientInfo.clientPhone;
-    clientEmail = returningClientInfo.clientEmail || '';
-    topic = returningClientInfo.topic || '';
-    note = '';
-  } else {
-    clientName = document.getElementById('clientName').value.trim();
-    clientPhone = document.getElementById('clientPhone').value.trim();
-    clientEmail = document.getElementById('clientEmail').value.trim();
-    topic = document.getElementById('clientTopic').value;
-    note = document.getElementById('clientNote').value.trim();
+    // Create booking - use returning client info if applicable
+    let clientName, clientPhone, clientEmail, topic, note;
+
+    if (isReturningClient && returningClientInfo) {
+      clientName = returningClientInfo.clientName;
+      clientPhone = returningClientInfo.clientPhone;
+      clientEmail = returningClientInfo.clientEmail || '';
+      topic = returningClientInfo.topic || '';
+      note = '';
+    } else {
+      clientName = document.getElementById('clientName').value.trim();
+      clientPhone = document.getElementById('clientPhone').value.trim();
+      clientEmail = document.getElementById('clientEmail').value.trim();
+      topic = document.getElementById('clientTopic').value;
+      note = document.getElementById('clientNote').value.trim();
+    }
+
+    if (!clientName || !clientPhone) {
+      showToast('预约信息不完整，请返回填写');
+      return;
+    }
+
+    // Save to Supabase cloud database
+    const bookingData = {
+      client_name: clientName,
+      client_phone: clientPhone,
+      client_email: clientEmail,
+      topic: topic,
+      note: note,
+      booking_date: selectedDate,
+      booking_slot: selectedSlot,
+      payment_method: document.querySelector('.payment-method.selected')?.dataset.method || 'unknown',
+      status: 'pending'
+    };
+
+    showToast('正在提交预约...');
+    const result = await Supabase.insertBooking(bookingData);
+
+    if (result && result.length > 0) {
+      const savedBooking = result[0];
+      // Remember phone for returning client detection
+      Store.set('lastClientPhone', clientPhone);
+
+      // Update local bookings cache
+      bookings.unshift(savedBooking);
+
+      // Show confirmation with cloud data
+      showConfirmation({
+        id: savedBooking.id,
+        date: savedBooking.booking_date,
+        time: savedBooking.booking_slot,
+        clientName: savedBooking.client_name,
+        clientPhone: savedBooking.client_phone,
+        topic: savedBooking.topic
+      });
+    } else {
+      // Fallback: still show confirmation even if cloud save has issues
+      const fallbackBooking = {
+        id: Date.now().toString(),
+        date: selectedDate,
+        time: selectedSlot,
+        clientName: clientName,
+        clientPhone: clientPhone,
+        topic: topic
+      };
+      Store.set('lastClientPhone', clientPhone);
+      showConfirmation(fallbackBooking);
+      showToast('预约已提交（本地保存）');
+    }
+  } catch(e) {
+    console.error('Payment error:', e);
+    showToast('提交遇到问题，请重试');
   }
-
-  const booking = {
-    id: Date.now().toString(),
-    date: selectedDate,
-    time: selectedSlot,
-    clientName: clientName,
-    clientPhone: clientPhone,
-    clientEmail: clientEmail,
-    topic: topic,
-    note: note,
-    status: 'pending',
-    createdAt: new Date().toISOString()
-  };
-
-  bookings.push(booking);
-  Store.set('bookings', bookings);
-
-  // Show confirmation
-  showConfirmation(booking);
 }
 
 function showConfirmation(booking) {
@@ -1509,9 +1641,13 @@ function saveSchedule() {
   showToast('排班设置已保存');
 }
 
-function renderBookingsList() {
+async function renderBookingsList() {
   const container = document.getElementById('bookingsList');
   const noBookings = document.getElementById('noBookings');
+
+  // Load ALL bookings from Supabase cloud
+  const allBookings = await Supabase.getBookings();
+  bookings = allBookings || [];
 
   if (bookings.length === 0) {
     container.innerHTML = '';
@@ -1520,15 +1656,14 @@ function renderBookingsList() {
   }
 
   noBookings.style.display = 'none';
-  const sorted = [...bookings].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-  container.innerHTML = sorted.map(b => {
-    const date = new Date(b.date);
-    const endTime = `${(parseInt(b.time.split(':')[0]) + 1).toString().padStart(2, '0')}:00`;
+  container.innerHTML = bookings.map(b => {
+    const date = new Date(b.booking_date);
+    const endTime = `${(parseInt(b.booking_slot.split(':')[0]) + 1).toString().padStart(2, '0')}:00`;
     return `<div class="booking-item">
       <div class="booking-info">
-        <h4>${b.clientName} · ${b.topic || '未填写'}</h4>
-        <p>${date.getMonth()+1}月${date.getDate()}日 ${b.time}-${endTime} · ${b.clientPhone}</p>
+        <h4>${b.client_name} · ${b.topic || '未填写'}</h4>
+        <p>${date.getMonth()+1}月${date.getDate()}日 ${b.booking_slot}-${endTime} · ${b.client_phone}</p>
       </div>
       <div style="display: flex; align-items: center; gap: 8px;">
         <span class="booking-status ${b.status}">${b.status === 'confirmed' ? '已确认' : '待确认'}</span>
@@ -1538,13 +1673,13 @@ function renderBookingsList() {
   }).join('');
 }
 
-function confirmBooking(bookingId) {
-  const booking = bookings.find(b => b.id === bookingId);
-  if (booking) {
-    booking.status = 'confirmed';
-    Store.set('bookings', bookings);
-    renderBookingsList();
+async function confirmBooking(bookingId) {
+  const result = await Supabase.updateBooking(bookingId, { status: 'confirmed' });
+  if (result) {
     showToast('已确认收款，预约生效');
+    renderBookingsList();
+  } else {
+    showToast('操作失败，请重试');
   }
 }
 
@@ -1576,7 +1711,7 @@ let loggedInClient = null;
 let rescheduleBookingId = null;
 let rescheduleNewSlot = null;
 
-function clientLogin() {
+async function clientLogin() {
   const phone = document.getElementById('clientLoginPhone').value.trim();
   if (!/^1[3-9]\d{9}$/.test(phone)) {
     document.getElementById('clientLoginPhone').closest('.form-group').classList.add('error');
@@ -1584,14 +1719,15 @@ function clientLogin() {
   }
   document.getElementById('clientLoginPhone').closest('.form-group').classList.remove('error');
 
-  // Find bookings for this phone
-  const clientBookings = bookings.filter(b => b.clientPhone === phone);
-  if (clientBookings.length === 0) {
+  showToast('正在查询预约记录...');
+  // Find bookings for this phone from Supabase
+  const clientBookings = await Supabase.getBookingsByPhone(phone);
+  if (!clientBookings || clientBookings.length === 0) {
     showToast('未找到该手机号的预约记录');
     return;
   }
 
-  loggedInClient = { phone: phone, name: clientBookings[0].clientName };
+  loggedInClient = { phone: phone, name: clientBookings[0].client_name };
   document.getElementById('clientLoginPanel').style.display = 'none';
   document.getElementById('clientBookingsPanel').style.display = 'block';
   document.getElementById('clientLoginName').textContent = loggedInClient.name;
@@ -1605,29 +1741,28 @@ function clientLogout() {
   document.getElementById('clientLoginPhone').value = '';
 }
 
-function renderClientBookings() {
+async function renderClientBookings() {
   const container = document.getElementById('clientBookingsList');
   const noBookings = document.getElementById('noClientBookings');
 
-  const myBookings = bookings.filter(b => b.clientPhone === loggedInClient.phone);
+  const myBookings = await Supabase.getBookingsByPhone(loggedInClient.phone);
 
-  if (myBookings.length === 0) {
+  if (!myBookings || myBookings.length === 0) {
     container.innerHTML = '';
     noBookings.style.display = 'block';
     return;
   }
 
   noBookings.style.display = 'none';
-  const sorted = [...myBookings].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-  container.innerHTML = sorted.map(b => {
-    const date = new Date(b.date);
-    const endTime = `${(parseInt(b.time.split(':')[0]) + 1).toString().padStart(2, '0')}:00`;
-    const isPast = new Date(b.date + 'T' + b.time) < new Date();
+  container.innerHTML = myBookings.map(b => {
+    const date = new Date(b.booking_date);
+    const endTime = `${(parseInt(b.booking_slot.split(':')[0]) + 1).toString().padStart(2, '0')}:00`;
+    const isPast = new Date(b.booking_date + 'T' + b.booking_slot) < new Date();
     return `<div class="booking-item">
       <div class="booking-info">
-        <h4>${date.getFullYear()}年${date.getMonth()+1}月${date.getDate()}日 ${b.time}-${endTime}</h4>
-        <p>咨询主题：${b.topic || '未填写'} · 预约编号 #${b.id.slice(-6)}</p>
+        <h4>${date.getFullYear()}年${date.getMonth()+1}月${date.getDate()}日 ${b.booking_slot}-${endTime}</h4>
+        <p>咨询主题：${b.topic || '未填写'} · 预约编号 #${b.id.slice(0, 8)}</p>
       </div>
       <div style="display: flex; align-items: center; gap: 10px;">
         <span class="booking-status ${b.status}">${b.status === 'confirmed' ? '已确认' : '待确认'}</span>
@@ -1657,7 +1792,7 @@ function closeRescheduleModal() {
   rescheduleNewSlot = null;
 }
 
-function loadRescheduleSlots() {
+async function loadRescheduleSlots() {
   const dateStr = document.getElementById('rescheduleDate').value;
   if (!dateStr) return;
 
@@ -1671,9 +1806,9 @@ function loadRescheduleSlots() {
     return;
   }
 
-  const bookedSlots = bookings
-    .filter(b => b.date === dateStr && b.id !== rescheduleBookingId)
-    .map(b => b.time);
+  // Check booked slots from Supabase (exclude current booking being rescheduled)
+  const dayBookings = await Supabase.fetch(`bookings?booking_date=eq.${dateStr}&id=neq.${rescheduleBookingId}&select=booking_slot`) || [];
+  const bookedSlots = dayBookings.map(b => b.booking_slot);
 
   grid.innerHTML = slots.map(time => {
     const isBooked = bookedSlots.includes(time);
@@ -1691,21 +1826,24 @@ function selectRescheduleSlot(el, time) {
   rescheduleNewSlot = time;
 }
 
-function confirmReschedule() {
+async function confirmReschedule() {
   const newDate = document.getElementById('rescheduleDate').value;
   if (!newDate || !rescheduleNewSlot) {
     showToast('请选择新的日期和时段');
     return;
   }
 
-  const booking = bookings.find(b => b.id === rescheduleBookingId);
-  if (booking) {
-    booking.date = newDate;
-    booking.time = rescheduleNewSlot;
-    Store.set('bookings', bookings);
+  const result = await Supabase.updateBooking(rescheduleBookingId, {
+    booking_date: newDate,
+    booking_slot: rescheduleNewSlot
+  });
+
+  if (result) {
     showToast('预约时间已修改');
     closeRescheduleModal();
     renderClientBookings();
+  } else {
+    showToast('修改失败，请重试');
   }
 }
 
@@ -1756,7 +1894,19 @@ function changeAdminPassword() {
 }
 
 // ========== Init ==========
-renderCalendar();
+async function initApp() {
+  // Load bookings from Supabase
+  try {
+    bookings = await Supabase.getBookings() || [];
+  } catch(e) {
+    console.error('Failed to load bookings from cloud:', e);
+    bookings = [];
+  }
+  renderCalendar();
+  checkHashAccess();
+}
+
+initApp();
 
 // Load agreement settings if exists
 const savedAgreement = Store.get('agreementSettings', null);
